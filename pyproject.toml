@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "so101-umi"
+version = "0.1.0"
+description = "SO-101 leader → relative EE pose → OpenArm mink IK teleop"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "SO101-umi" }]
+dependencies = [
+  "numpy>=1.24",
+  "mujoco>=3.8.1",
+  "mink>=0.0.10",
+  "qpsolvers[daqp]>=4.3",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+leader = [
+  "lerobot",
+]
+dev = [
+  "pytest>=7.0",
+]
+
+[project.scripts]
+so101-umi-teleop = "so101_umi.teleop:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+so101_umi = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

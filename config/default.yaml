@@ -1,0 +1,35 @@
+# SO101-umi teleop defaults (this machine, 2026-08-19)
+
+# Prefer by-id so ACM numbers swapping does not silently retarget the arm.
+# This host has two QinHeng CH343 (1a86:55d3) adapters — likely leader + follower.
+# Leader is ACM1 on this machine (ACM0 is the parked follower).
+leader_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C82107971-if00
+# Sibling bus (parked follower — do not command from this repo):
+#   /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C82107039-if00  -> /dev/ttyACM0
+
+scale: 2.0
+fps: 50
+latch_on_start: true
+wrist_roll_offset_deg: 0.0
+
+position_cost: 50.0
+orientation_cost: 0.15
+posture_cost: 0.02
+damping_cost: 0.2
+max_ee_step_m: 0.008
+max_ee_step_rad: 0.06
+ik_iters: 8
+ik_dt: 0.005
+ik_damping: 0.08
+joint_lpf_hz: 8.0
+deadband_m: 0.003
+deadband_rad: 0.03
+
+so101_align: ry-90
+openarm_align: baked  # ee_aligned site already has Ry(-90) in the MJCF
+ee_frame: ee_aligned
+gripper_open_m: 0.044
+
+openarm_mjcf: assets/openarm/scene.xml
+so101_urdf: assets/so101/so101_new_calib.urdf
+so101_ee_link: gripper_frame_link
