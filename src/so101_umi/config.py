@@ -15,7 +15,7 @@ class TeleopConfig:
     leader_port: str
     scale: float = 2.0
     fps: float = 50.0
-    latch_on_start: bool = True
+    latch_on_start: bool = False
     wrist_roll_offset_deg: float = 0.0
     position_cost: float = 50.0
     orientation_cost: float = 0.15
@@ -30,16 +30,25 @@ class TeleopConfig:
     deadband_m: float = 0.003
     deadband_rad: float = 0.03
     so101_align: str = "ry-90"
-    openarm_align: str = "baked"
-    ee_frame: str = "ee_aligned"
+    openarm_align: str = "ry-90"
+    arm_side: str = "right"
+    ee_frame: str = "openarm_right_link7"
+    ee_frame_type: str = "body"
+    tcp_offset_m: float = 0.2343
     gripper_open_m: float = 0.044
-    openarm_mjcf: str = "assets/openarm/scene.xml"
+    openarm_mjcf: str = "/home/vector/work/openarm_mujoco/openarm_mujoco/v1/scene.xml"
+    openarm_description_root: str = "/home/vector/work/openarm_teleop/openarm_description"
     so101_urdf: str = "assets/so101/so101_new_calib.urdf"
     so101_ee_link: str = "gripper_frame_link"
 
     def resolve(self, root: Path | None = None) -> "TeleopConfig":
         root = root or _PKG_ROOT
         self.openarm_mjcf = str((root / self.openarm_mjcf).resolve()) if not Path(self.openarm_mjcf).is_absolute() else self.openarm_mjcf
+        self.openarm_description_root = (
+            str((root / self.openarm_description_root).resolve())
+            if not Path(self.openarm_description_root).is_absolute()
+            else self.openarm_description_root
+        )
         self.so101_urdf = str((root / self.so101_urdf).resolve()) if not Path(self.so101_urdf).is_absolute() else self.so101_urdf
         return self
 

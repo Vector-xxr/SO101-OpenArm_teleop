@@ -1,6 +1,8 @@
 # SO101-umi
 
-SO-101 实体 leader 的夹爪 **6D 位姿** → 相对运动（使能时 latch）→ 叠到 OpenArm 仿真 follower TCP → **mink** FrameTask IK → MuJoCo。
+SO-101 实体 leader 的夹爪 **6D 位姿** → 相对运动（使能时 latch）→ 叠到 OpenArm 仿真右臂 TCP → **mink** FrameTask IK → MuJoCo。OpenArm 使用
+`/home/vector/work/openarm_mujoco/openarm_mujoco/v1/scene.xml` 官方双臂MJCF与OBJ视觉网格，
+只驱动右臂，左臂固定在启动姿态。
 
 ```
 SO101Leader.get_action()                 # 5 个本体关节 deg + gripper 0–100
@@ -8,7 +10,7 @@ SO101Leader.get_action()                 # 5 个本体关节 deg + gripper 0–1
   → T_aligned = T_native @ R_align       # +X 前 / +Y 左 / +Z 上
   → T_rel = T(t) ⊖ T(0)                  # p 相减, R(t)@R(0).T
   → T_cmd = T_openarm_home ⊕ (S * T_rel) # 叠到 OpenArm 当前 home TCP
-  → mink FrameTask on site ee_aligned
+  → mink FrameTask on body openarm_right_hand_tcp
   → MuJoCo qpos / viewer
 gripper.pos (0–100) 单独映射到 OpenArm 手指开合，不要和本体关节一起 deg2rad。
 ```
@@ -54,9 +56,17 @@ python -m so101_umi.teleop --sim-leader --scale 2.0
 
 # 实体 SO-101 leader（只读位置）
 conda run -n lerobot python -m so101_umi.teleop \
-  --leader-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C82107039-if00 \
+  --leader-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C82107971-if00 \
   --scale 2.0 --fps 50
 ```
+
+运行后默认处于暂停状态。点击MuJoCo仿真窗口使其获得焦点，即可直接按键；
+终端窗口中的相同按键也仍然有效：
+
+- `p`：锁存当前SO-101末端6D位姿和OpenArm右臂TCP，开始遥操。
+- `q`：暂停遥操，OpenArm保持当前位置。
+- 再次按`p`：以双方当前位置重新记录home后继续，恢复时不会跳变。
+- `Ctrl+C`：退出程序。
 
 常用参数：
 
@@ -68,7 +78,7 @@ conda run -n lerobot python -m so101_umi.teleop \
 | `--pos-cost` | `50` | 位置权重 |
 | `--max-ee-step` | `0.02` m | 每 tick EE 平移限幅 |
 | `--wrist-roll-offset-deg` | `0` | 加在 `wrist_roll` 上再 FK |
-| `--so101-align` | `ry-90` | 见下方坐标系 |
+| `--so101-align` | `ry-90-rx180` | 见下方坐标系 |
 | `--calibration` | 无 | LeRobot JSON |
 | `--sim-leader` | off | 正弦 dummy 关节 |
 | `--no-viewer` | off | 无窗口 |
@@ -91,11 +101,19 @@ URDF：`assets/so101/so101_new_calib.urdf`（TheRobotStudio `so101_new_calib.urd
 Ry(π) 把父系 **-Z** 映成 TCP **+Z**，原点在指尖附近 → **native +Z = 朝物体（forward）**。  
 native +Y = `gripper_link` +Y（张合方向 / 左）。native +X = 右手系剩下的轴。
 
-### Native OpenArm TCP（`ee_native`）
+### OpenArm右臂虚拟TCP
 
-模型：OpenArm **v1 单臂** `assets/openarm/openarm.xml`（不是 bimanual）。  
-TCP 在 `openarm_link7` 上，指尖中心 `(0, 0.0015, 0.1151)`，姿态 = link7。  
-手指沿 ±Y 滑动、沿 +Z 伸出 → **native +Z = forward，native +Y = left**。
+模型使用 `openarm_mujoco/v1` 的双臂MJCF渲染，并以其官方
+`openarm_right_hand_tcp` 为IK帧。该帧已是X-forward，但零位时Y/Z方向相反，
+因此只增加不交换X/Z的坐标修正：
+
+```text
+R_openarm_tcp = Rx(180°) = diag(1, -1, -1)
+```
+
+因此无需修改URDF或MJCF，即可使右臂TCP与SO-101统一为
+**+X forward / +Y left / +Z up**。左臂所有关节在每次IK迭代后恢复启动值，
+不参与求解。
 
 ### R_align
 
@@ -111,8 +129,10 @@ R_align = Ry(-90°) =
 T_aligned = T_native @ R_align
 ```
 
-- SO-101：代码里 `--so101-align ry-90`（可改 `identity` / `rz90` …）
-- OpenArm：MJCF 里 `ee_aligned` **已经乘了同一个 quat** `0.707 0 -0.707 0`。mink FrameTask 跟踪的是 **对齐后的** site，follower 侧不再二次乘 R_align。
+- SO-101：实机轴向为前方一致、左右/上下相反，因此使用
+  `R_align = Ry(-90°) @ Rx(180°)`，即 `--so101-align ry-90-rx180`。
+- OpenArm：直接使用官方 `hand_tcp`，代码仅乘 `Rx(180°)` 翻转Y/Z，
+  不再使用会交换X/Z的 `Ry(-90°)`。
 
 相对运动（与 umi-vista `replay.py` 相同）在对齐后的 TCP 上计算，再叠到 OpenArm home：
 

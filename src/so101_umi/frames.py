@@ -82,9 +82,13 @@ _PRESETS: dict[str, np.ndarray] = {
     "identity": R_IDENTITY,
     "baked": R_IDENTITY,  # already in MJCF
     "ry-90": R_ALIGN_RY_NEG90,
+    # SO-101 physical gripper: forward agrees with OpenArm, while left/up
+    # are reversed. Keep +X and flip +Y/+Z with a local Rx(pi).
+    "ry-90-rx180": R_ALIGN_RY_NEG90 @ _rotx(np.pi),
     "ry90": _roty(np.pi / 2),
     "rx90": _rotx(np.pi / 2),
     "rx-90": _rotx(-np.pi / 2),
+    "rx180": _rotx(np.pi),
     "rz90": _rotz(np.pi / 2),
     "rz-90": _rotz(-np.pi / 2),
     "ry180": _roty(np.pi),

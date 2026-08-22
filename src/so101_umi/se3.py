@@ -86,6 +86,40 @@ def overlay_relative(
     return T_rel, T_cmd
 
 
+def overlay_relative_world_axes(
+    T_now: np.ndarray,
+    T_ref: np.ndarray,
+    T_home: np.ndarray,
+    scale: float,
+    R_align: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Overlay the leader's home-relative spatial motion onto OpenArm.
+
+    The relative motion is expressed in the SO-101 base/world frame, whose
+    X/Y/Z axes share the OpenArm world semantics. Translation is added directly
+    to the OpenArm world position and rotation is left-multiplied as a spatial
+    increment. Neither component depends on the latched OpenArm TCP orientation.
+    """
+    T_now = np.asarray(T_now, dtype=np.float64)
+    T_ref = np.asarray(T_ref, dtype=np.float64)
+    T_home = np.asarray(T_home, dtype=np.float64)
+    if R_align is not None:
+        T_now = apply_align(T_now, R_align)
+        T_ref = apply_align(T_ref, R_align)
+
+    R_now, p_now = split_T(T_now)
+    R_ref, p_ref = split_T(T_ref)
+    R_home, p_home = split_T(T_home)
+    R_rel = R_now @ R_ref.T
+    p_rel = p_now - p_ref
+    T_rel = make_T(R_rel, p_rel)
+    T_cmd = make_T(
+        R_rel @ R_home,
+        p_home + float(scale) * p_rel,
+    )
+    return T_rel, T_cmd
+
+
 def hold_if_small(
     T_prev: np.ndarray,
     T_next: np.ndarray,

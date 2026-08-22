@@ -126,9 +126,38 @@ class HardwareLeader(BaseLeader):
                 f"[leader] no calibration JSON; using mid=2048 ticks as 0 deg on {port}. "
                 "Pass --calibration for true LeRobot offsets."
             )
+        self._has_gripper = True
+        self._fallback_gripper_pct = 50.0
         self.bus = FeetechMotorsBus(port=port, motors=motors, calibration=calib)
         self._use_dummy_calib = calibration_path is None
-        self.bus.connect(handshake=True)
+        try:
+            self.bus.connect(handshake=True)
+        except RuntimeError as exc:
+            message = str(exc)
+            only_gripper_missing = (
+                "Missing motor IDs:" in message
+                and "- 6 (expected model:" in message
+                and all(f"- {motor_id} (expected model:" not in message for motor_id in range(1, 6))
+            )
+            if not only_gripper_missing:
+                raise
+            try:
+                self.bus.disconnect(disable_torque=False)
+            except Exception:
+                pass
+            body_motors = {name: motor for name, motor in motors.items() if name != GRIPPER_JOINT}
+            body_calib = {name: value for name, value in calib.items() if name != GRIPPER_JOINT}
+            self.bus = FeetechMotorsBus(
+                port=port,
+                motors=body_motors,
+                calibration=body_calib,
+            )
+            self.bus.connect(handshake=True)
+            self._has_gripper = False
+            print(
+                "[leader] warning: motor ID 6 (gripper) is missing; "
+                "continuing with arm IDs 1-5 and holding simulated gripper at 50%."
+            )
         print(f"[leader] connected (read-only) on {port}")
 
     def get_action(self) -> dict[str, float]:
@@ -137,10 +166,18 @@ class HardwareLeader(BaseLeader):
             out = {}
             for name in BODY_JOINTS:
                 out[f"{name}.pos"] = _ticks_to_deg(int(raw[name]))
-            out[f"{GRIPPER_JOINT}.pos"] = _ticks_to_gripper_pct(int(raw[GRIPPER_JOINT]))
+            out[f"{GRIPPER_JOINT}.pos"] = (
+                _ticks_to_gripper_pct(int(raw[GRIPPER_JOINT]))
+                if self._has_gripper
+                else self._fallback_gripper_pct
+            )
             return out
         pos = self.bus.sync_read("Present_Position", normalize=True)
-        return {f"{name}.pos": float(pos[name]) for name in ALL_JOINTS}
+        out = {f"{name}.pos": float(pos[name]) for name in BODY_JOINTS}
+        out[f"{GRIPPER_JOINT}.pos"] = (
+            float(pos[GRIPPER_JOINT]) if self._has_gripper else self._fallback_gripper_pct
+        )
+        return out
 
     def close(self) -> None:
         try:

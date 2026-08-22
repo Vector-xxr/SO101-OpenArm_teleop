@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from queue import Empty, SimpleQueue
+import select
+import sys
+import termios
 import time
+import tty
 
 import numpy as np
 
@@ -12,7 +17,7 @@ from .filter import JointEMA
 from .frames import describe_axes, rotation_from_preset
 from .leader import ALL_JOINTS, action_gripper_pct, action_to_body_deg, open_leader
 from .openarm_ik import OpenArmMinkIK
-from .se3 import apply_align, clip_step, hold_if_small, overlay_relative, split_T
+from .se3 import apply_align, clip_step, hold_if_small, overlay_relative_world_axes, split_T
 from .serial_util import print_serial_devices
 from .so101_fk import SO101FK
 
@@ -21,6 +26,31 @@ def busy_wait(dt: float) -> None:
     end = time.perf_counter() + dt
     while time.perf_counter() < end:
         pass
+
+
+class KeyboardInput:
+    """Non-blocking single-key input while preserving terminal settings."""
+
+    def __init__(self) -> None:
+        self.fd: int | None = None
+        self.saved: list | None = None
+
+    def __enter__(self) -> "KeyboardInput":
+        if sys.stdin.isatty():
+            self.fd = sys.stdin.fileno()
+            self.saved = termios.tcgetattr(self.fd)
+            tty.setcbreak(self.fd)
+        return self
+
+    def read(self) -> str | None:
+        if self.fd is None:
+            return None
+        readable, _, _ = select.select([sys.stdin], [], [], 0.0)
+        return sys.stdin.read(1).lower() if readable else None
+
+    def __exit__(self, *_args: object) -> None:
+        if self.fd is not None and self.saved is not None:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,6 +74,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ee-frame", default=None, help="OpenArm site (default ee_aligned)")
     p.add_argument("--no-viewer", action="store_true")
     p.add_argument("--steps", type=int, default=0, help="Finite steps then exit (0=forever)")
+    p.add_argument("--auto-start", action="store_true", help="Latch and start without waiting for p")
     p.add_argument("--no-latch", action="store_true", help="Skip latch (overlay vs identity)")
     p.add_argument("--print-frames", action="store_true")
     return p.parse_args(argv)
@@ -74,6 +105,8 @@ def _apply_cli(cfg: TeleopConfig, args: argparse.Namespace) -> TeleopConfig:
         cfg.ee_frame = args.ee_frame
     if args.no_latch:
         cfg.latch_on_start = False
+    if args.auto_start:
+        cfg.latch_on_start = True
     return cfg
 
 
@@ -106,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
     ik = OpenArmMinkIK(
         cfg.openarm_mjcf,
         ee_frame=cfg.ee_frame,
+        ee_frame_type=cfg.ee_frame_type,
+        arm_side=cfg.arm_side,
+        tcp_offset_m=cfg.tcp_offset_m,
+        tcp_align=cfg.openarm_align,
+        description_root=cfg.openarm_description_root,
         position_cost=cfg.position_cost,
         orientation_cost=cfg.orientation_cost,
         posture_cost=cfg.posture_cost,
@@ -127,10 +165,14 @@ def main(argv: list[str] | None = None) -> int:
 
     T_so101_ref = None
     T_cmd_prev = T_home.copy()
+    teleop_active = cfg.latch_on_start
     viewer = None
+    viewer_keys: SimpleQueue[str] = SimpleQueue()
     n = 0
     q0: np.ndarray | None = None
     joint_ema = JointEMA(cfg.joint_lpf_hz, cfg.fps, dim=len(ALL_JOINTS))
+    keyboard = KeyboardInput()
+    keyboard.__enter__()
 
     try:
         action = _smooth_action(leader.get_action(), joint_ema)
@@ -144,15 +186,26 @@ def main(argv: list[str] | None = None) -> int:
 
         if cfg.latch_on_start:
             T_so101_ref = T_native.copy()
-            print("[latch] stored T_so101(0) and OpenArm home TCP")
+            print("[teleop] auto-start: latched SO-101 and OpenArm TCP")
         else:
-            T_so101_ref = np.eye(4)
+            print("[teleop] PAUSED — press p to latch home and start; q pauses")
 
         if not args.no_viewer:
             try:
                 import mujoco.viewer
 
-                viewer = mujoco.viewer.launch_passive(ik.model, ik.data)
+                def on_viewer_key(keycode: int) -> None:
+                    if keycode in (ord("P"), ord("p")):
+                        viewer_keys.put("p")
+                    elif keycode in (ord("Q"), ord("q")):
+                        viewer_keys.put("q")
+
+                viewer = mujoco.viewer.launch_passive(
+                    ik.model,
+                    ik.data,
+                    key_callback=on_viewer_key,
+                )
+                print("[viewer] click the MuJoCo window, then press p/q to control teleop")
             except Exception as e:
                 print(f"[viewer] disabled ({e})")
                 viewer = None
@@ -161,15 +214,42 @@ def main(argv: list[str] | None = None) -> int:
             t0 = time.perf_counter()
             action = _smooth_action(leader.get_action(), joint_ema)
             T_now = fk.forward(action_to_body_deg(action), cfg.wrist_roll_offset_deg)
-            _, T_cmd = overlay_relative(
-                T_now, T_so101_ref, T_home, scale=cfg.scale, R_align=R_align
-            )
-            T_cmd = hold_if_small(T_cmd_prev, T_cmd, cfg.deadband_m, cfg.deadband_rad)
-            T_cmd = clip_step(T_cmd_prev, T_cmd, cfg.max_ee_step_m, cfg.max_ee_step_rad)
-            err = ik.solve(T_cmd)
-            ik.set_gripper(action_gripper_pct(action) / 100.0, cfg.gripper_open_m)
+            try:
+                key = viewer_keys.get_nowait()
+            except Empty:
+                key = keyboard.read()
+            if key == "p":
+                T_so101_ref = T_now.copy()
+                T_home = ik.ee_pose()
+                T_cmd_prev = T_home.copy()
+                teleop_active = True
+                q0 = np.array(list(action_to_body_deg(action).values()), dtype=np.float64)
+                print(
+                    "[teleop] ACTIVE — re-latched SO-101 and OpenArm TCP; "
+                    f"home={np.round(T_home[:3, 3], 4)}"
+                )
+            elif key == "q":
+                teleop_active = False
+                T_cmd_prev = ik.ee_pose()
+                print("[teleop] PAUSED — OpenArm holding; press p to re-home")
+
+            if teleop_active:
+                assert T_so101_ref is not None
+                _, T_cmd = overlay_relative_world_axes(
+                    T_now,
+                    T_so101_ref,
+                    T_home,
+                    scale=cfg.scale,
+                    R_align=R_align,
+                )
+                T_cmd = hold_if_small(T_cmd_prev, T_cmd, cfg.deadband_m, cfg.deadband_rad)
+                T_cmd = clip_step(T_cmd_prev, T_cmd, cfg.max_ee_step_m, cfg.max_ee_step_rad)
+                ik.solve(T_cmd)
+                ik.set_gripper(action_gripper_pct(action) / 100.0, cfg.gripper_open_m)
+                T_cmd_prev = T_cmd
+            else:
+                T_cmd = T_cmd_prev
             ik.push_ctrl()
-            T_cmd_prev = T_cmd
             n += 1
             q_body = np.array(list(action_to_body_deg(action).values()), dtype=np.float64)
             if q0 is None:
@@ -204,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if viewer is not None:
             viewer.close()
+        keyboard.__exit__(None, None, None)
         leader.close()
     return 0
 

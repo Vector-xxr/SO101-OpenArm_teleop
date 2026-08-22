@@ -4,9 +4,21 @@ from pathlib import Path
 
 import numpy as np
 
-from so101_umi.frames import R_ALIGN_RY_NEG90, describe_axes
+from so101_umi.frames import (
+    R_ALIGN_RY_NEG90,
+    describe_axes,
+    rotation_from_preset,
+)
 from so101_umi.filter import JointEMA
-from so101_umi.se3 import clip_step, hold_if_small, make_T, minus, overlay_relative, plus
+from so101_umi.se3 import (
+    clip_step,
+    hold_if_small,
+    make_T,
+    minus,
+    overlay_relative,
+    overlay_relative_world_axes,
+    plus,
+)
 from so101_umi.so101_fk import SO101FK
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,12 +40,41 @@ def test_relative_translation_scale():
     np.testing.assert_allclose(T_cmd[:3, 3], np.array([0.5, 0, 0.4]), atol=1e-9)
 
 
+def test_world_axis_overlay_is_independent_of_tcp_home_orientations():
+    # A leader world +Y displacement remains OpenArm world +Y regardless of
+    # either robot's latched TCP orientation.
+    R_leader = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    R_follower = np.array([[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]])
+    T_ref = make_T(R_leader, np.zeros(3))
+    T_now = make_T(R_leader, np.array([0.0, 0.1, 0.0]))
+    T_home = make_T(R_follower, np.array([0.3, 0.2, 0.5]))
+    _, T_cmd = overlay_relative_world_axes(T_now, T_ref, T_home, scale=2.0)
+    np.testing.assert_allclose(T_cmd[:3, 3], np.array([0.3, 0.4, 0.5]), atol=1e-9)
+
+
+def test_world_rotation_increment_is_left_multiplied():
+    R_ref = rotation_from_preset("rx90")
+    R_delta = rotation_from_preset("rz90")
+    R_home = rotation_from_preset("ry-90")
+    T_ref = make_T(R_ref, np.zeros(3))
+    T_now = make_T(R_delta @ R_ref, np.zeros(3))
+    T_home = make_T(R_home, np.zeros(3))
+    _, T_cmd = overlay_relative_world_axes(T_now, T_ref, T_home, scale=1.0)
+    np.testing.assert_allclose(T_cmd[:3, :3], R_delta @ R_home, atol=1e-9)
+
+
 def test_r_align_columns():
     # T_aligned = T_native @ R_align. Native +Z is aligned +X.
     z_n = np.array([0.0, 0.0, 1.0])
     np.testing.assert_allclose(R_ALIGN_RY_NEG90.T @ z_n, np.array([1.0, 0.0, 0.0]), atol=1e-9)
     y_n = np.array([0.0, 1.0, 0.0])
     np.testing.assert_allclose(R_ALIGN_RY_NEG90.T @ y_n, np.array([0.0, 1.0, 0.0]), atol=1e-9)
+
+
+def test_so101_physical_axis_correction_keeps_x_and_flips_yz():
+    corrected = rotation_from_preset("ry-90-rx180")
+    basis_change = R_ALIGN_RY_NEG90.T @ corrected
+    np.testing.assert_allclose(basis_change, np.diag([1.0, -1.0, -1.0]), atol=1e-9)
 
 
 def test_so101_fk_zero_finite():
